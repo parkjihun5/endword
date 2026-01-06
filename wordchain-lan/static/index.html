@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>끝말잇기 LAN</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans KR", sans-serif; }
+    body { margin: 0; padding: 24px; background:#0b1020; color:#e7ecff; }
+    .card { max-width: 860px; margin: 0 auto; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); border-radius:16px; padding:16px; }
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    input { padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.18); background:rgba(0,0,0,0.25); color:#e7ecff; outline:none; }
+    button { padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,0.18); background:rgba(255,255,255,0.10); color:#e7ecff; cursor:pointer; font-weight:700; }
+    button.primary { background: rgba(93,138,255,0.35); border-color: rgba(93,138,255,0.55); }
+    .big { font-size:34px; font-weight:800; margin:12px 0 6px; }
+    .log { margin-top:12px; padding:12px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background:rgba(0,0,0,0.20); max-height:280px; overflow:auto; white-space:pre-wrap; }
+    .pill { display:inline-flex; gap:8px; align-items:center; padding:7px 10px; border-radius:999px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12); font-size:13px; }
+    .danger { color:#ff9aa2; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2 style="margin:0 0 10px;">끝말잇기 (LAN 멀티플레이)</h2>
+
+    <div class="row">
+      <span class="pill">서버: <b id="serverText"></b></span>
+      <span class="pill">방: <b id="roomText">-</b></span>
+      <span class="pill">사용 단어: <b id="usedText">0</b></span>
+      <span class="pill">상태: <b id="statusText">미접속</b></span>
+    </div>
+
+    <div class="big" id="currentWord">시작 단어 없음</div>
+    <div>다음은 <b id="needChar">-</b>(으)로 시작</div>
+
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.12); margin:14px 0;">
+
+    <div class="row">
+      <input id="nameInput" placeholder="닉네임 (예: 현석)" />
+      <input id="roomInput" placeholder="방 이름 (예: demo)" value="demo" />
+      <button class="primary" id="connectBtn">접속</button>
+      <button id="disconnectBtn">끊기</button>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <input id="startInput" placeholder="시작 단어" />
+      <button class="primary" id="startBtn">시작</button>
+      <button id="resetBtn">리셋</button>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
+      <input id="wordInput" placeholder="단어 입력" style="min-width:260px;" />
+      <button class="primary" id="sendBtn">전송</button>
+    </div>
+
+    <div class="log" id="log"></div>
+    <div id="err" class="danger" style="margin-top:10px;"></div>
+  </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  const serverText = $("serverText");
+  const roomText = $("roomText");
+  const usedText = $("usedText");
+  const statusText = $("statusText");
+  const currentWordEl = $("currentWord");
+  const needCharEl = $("needChar");
+  const logEl = $("log");
+  const errEl = $("err");
+
+  const nameInput = $("nameInput");
+  const roomInput = $("roomInput");
+  const connectBtn = $("connectBtn");
+  const disconnectBtn = $("disconnectBtn");
+
+  const startInput = $("startInput");
+  const startBtn = $("startBtn");
+  const resetBtn = $("resetBtn");
+
+  const wordInput = $("wordInput");
+  const sendBtn = $("sendBtn");
+
+  let ws = null;
+
+  serverText.textContent = location.host;
+
+  function lastChar(w){ return w ? w[w.length - 1] : ""; }
+
+  function setState({room, currentWord, usedCount, log}) {
+    if (room) roomText.textContent = room;
+    currentWordEl.textContent = currentWord || "시작 단어 없음";
+    needCharEl.textContent = currentWord ? lastChar(currentWord) : "-";
+    usedText.textContent = String(usedCount ?? 0);
+
+    if (Array.isArray(log) && log.length) {
+      for (const line of log) appendLog(line);
+    }
+  }
+
+  function appendLog(line) {
+    logEl.textContent += (logEl.textContent ? "\n" : "") + line;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setStatus(text){ statusText.textContent = text; }
+  function setError(msg){ errEl.textContent = msg || ""; }
+
+  function connect() {
+    const name = encodeURIComponent((nameInput.value || "익명").trim());
+    const room = encodeURIComponent((roomInput.value || "demo").trim() || "demo");
+    const proto = (location.protocol === "https:") ? "wss" : "ws";
+    const url = `${proto}://${location.host}/ws?room=${room}&name=${name}`;
+
+    ws = new WebSocket(url);
+
+    ws.onopen = () => {
+      setStatus("접속됨");
+      setError("");
+      appendLog(`[시스템] 서버 접속: ${url}`);
+    };
+
+    ws.onmessage = (ev) => {
+      const data = JSON.parse(ev.data);
+      if (data.type === "state") setState(data);
+      else if (data.type === "log") setState({ log: data.log });
+      else if (data.type === "error") setError(data.message);
+    };
+
+    ws.onclose = () => {
+      setStatus("미접속");
+      appendLog("[시스템] 연결 종료");
+      ws = null;
+    };
+
+    ws.onerror = () => {
+      setError("WebSocket 오류가 발생했어요. (방화벽/포트 확인)");
+    };
+  }
+
+  function send(type, payload={}) {
+    if (!ws || ws.readyState !== 1) {
+      setError("서버에 먼저 접속해 주세요.");
+      return;
+    }
+    setError("");
+    ws.send(JSON.stringify({ type, ...payload }));
+  }
+
+  connectBtn.addEventListener("click", () => {
+    if (ws) return;
+    connect();
+  });
+
+  disconnectBtn.addEventListener("click", () => {
+    if (ws) ws.close();
+  });
+
+  startBtn.addEventListener("click", () => {
+    send("start", { word: startInput.value });
+    startInput.value = "";
+  });
+
+  resetBtn.addEventListener("click", () => send("reset"));
+
+  sendBtn.addEventListener("click", () => {
+    send("play", { word: wordInput.value });
+    wordInput.value = "";
+    wordInput.focus();
+  });
+
+  wordInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendBtn.click();
+  });
+})();
+</script>
+</body>
+</html>
